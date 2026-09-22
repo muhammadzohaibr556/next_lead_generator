@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-export function security(request: Request): Response | null {
+function hostSecurity(request: Request): Response | null {
   const url = new URL(request.url),
     host = request.headers.get("host") || url.host;
   const allowed = (process.env.ALLOWED_HOSTS || "localhost,127.0.0.1,[::1]")
@@ -13,6 +13,63 @@ export function security(request: Request): Response | null {
   }
   if (!allowed.includes(hostname))
     return Response.json({ detail: "Host not allowed" }, { status: 400 });
+  return null;
+}
+function writeSecurity(request: Request): Response | null {
+  if (!["POST", "PATCH", "DELETE", "PUT"].includes(request.method))
+    return null;
+  const url = new URL(request.url),
+    host = request.headers.get("host") || url.host;
+  const origin = request.headers.get("origin");
+  let same = true;
+  try {
+    if (origin) same = new URL(origin).host === host;
+  } catch {
+    same = false;
+  }
+  if (!same || request.headers.get("sec-fetch-site") === "cross-site")
+    return Response.json(
+      { detail: "Cross-origin writes are not allowed" },
+      { status: 403 },
+    );
+  if (
+    request.headers.get("content-type")?.split(";")[0].trim() !==
+    "application/json"
+  )
+    return Response.json({ detail: "Use application/json" }, { status: 415 });
+  return null;
+}
+export function externalSecurity(request: Request): Response | null {
+  const hostDenied = hostSecurity(request);
+  if (hostDenied) return hostDenied;
+  const writeDenied = writeSecurity(request);
+  if (writeDenied) return writeDenied;
+  const configured = process.env.PERMIT_ATLAS_API_KEY || "";
+  if (!configured)
+    return Response.json(
+      { detail: "External API authentication is not configured" },
+      { status: 503 },
+    );
+  const auth = request.headers.get("authorization") || "",
+    match = auth.match(/^Bearer\s+(.+)$/i),
+    supplied = match?.[1].trim() || "",
+    hash = (value: string) => createHash("sha256").update(value).digest();
+  if (!supplied || !timingSafeEqual(hash(supplied), hash(configured)))
+    return Response.json(
+      { detail: "Bearer authentication required" },
+      {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": "Bearer",
+          "Cache-Control": "no-store",
+        },
+      },
+    );
+  return null;
+}
+export function security(request: Request): Response | null {
+  const hostDenied = hostSecurity(request);
+  if (hostDenied) return hostDenied;
   const username = process.env.APP_USERNAME || "",
     password = process.env.APP_PASSWORD || "";
   if (Boolean(username) !== Boolean(password))
@@ -45,24 +102,5 @@ export function security(request: Request): Response | null {
         },
       );
   }
-  if (["POST", "PATCH", "DELETE", "PUT"].includes(request.method)) {
-    const origin = request.headers.get("origin");
-    let same = true;
-    try {
-      if (origin) same = new URL(origin).host === host;
-    } catch {
-      same = false;
-    }
-    if (!same || request.headers.get("sec-fetch-site") === "cross-site")
-      return Response.json(
-        { detail: "Cross-origin writes are not allowed" },
-        { status: 403 },
-      );
-    if (
-      request.headers.get("content-type")?.split(";")[0].trim() !==
-      "application/json"
-    )
-      return Response.json({ detail: "Use application/json" }, { status: 415 });
-  }
-  return null;
+  return writeSecurity(request);
 }

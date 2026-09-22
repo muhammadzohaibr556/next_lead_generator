@@ -27,6 +27,8 @@ export function leadQuery(f: Partial<Filters>, radius = true) {
     return "$" + args.length;
   };
   if ((f.scope || "prospecting") === "prospecting") clauses.push(FOCUS_SQL);
+  else if (f.scope === "external")
+    clauses.push("active AND status NOT IN ('Sold','Dismissed')");
   if (!f.state && f.territory === "target")
     clauses.push("state IN ('CA','SC')");
   for (const key of ["trade", "state", "city", "stage", "status"] as const)

@@ -21,7 +21,7 @@ export const stages = [
 ] as const;
 export const filterSchema = z
   .object({
-    scope: z.enum(["prospecting", "history"]).default("prospecting"),
+    scope: z.enum(["prospecting", "history", "external"]).default("prospecting"),
     center_lat: z.coerce.number().min(-90).max(90).optional(),
     center_lon: z.coerce.number().min(-180).max(180).optional(),
     radius_miles: z.coerce
