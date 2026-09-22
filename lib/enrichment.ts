@@ -320,38 +320,43 @@ export async function queueEnrichment(
   lead: Permit & { id: number },
   kind: "owner" | "contacts",
 ) {
-  return transaction(async (db) => {
-    await enrichmentLock(db);
-    const ctx = await enrichmentDetails(db, lead);
-    let key: string, provider: string;
-    if (kind === "owner") {
-      if (ctx.owner) return { status: "cached" };
-      key = lookupKey(lead);
-      provider = "realie";
-    } else {
-      requireContact(ctx.owner, ctx.review);
-      if (ctx.contacts) return { status: "cached" };
-      key = contactKey(ctx.owner!, ctx.review.owner_type);
-      provider = "melissa";
-    }
-    const pending = (
-      await db.query(
-        "SELECT id,status FROM enrichment_jobs WHERE cache_key=$1 AND kind=$2 AND status IN ('queued','running')",
-        [key, kind],
-      )
-    ).rows[0];
-    if (pending) return pending;
-    const state = await providerStatus(db, provider);
-    if (!state.available) throw new HttpError(409, state.message);
-    if (!lead.address)
-      throw new HttpError(422, "A project address is required.");
-    return (
-      await db.query(
-        "INSERT INTO enrichment_jobs(lead_id,cache_key,kind) VALUES($1,$2,$3) RETURNING id,status",
-        [lead.id, key, kind],
-      )
-    ).rows[0];
-  });
+  return transaction((db) => queueEnrichmentInTransaction(db, lead, kind));
+}
+export async function queueEnrichmentInTransaction(
+  db: DB,
+  lead: Permit & { id: number },
+  kind: "owner" | "contacts",
+) {
+  await enrichmentLock(db);
+  const ctx = await enrichmentDetails(db, lead);
+  let key: string, provider: string;
+  if (kind === "owner") {
+    if (ctx.owner) return { status: "cached" };
+    key = lookupKey(lead);
+    provider = "realie";
+  } else {
+    requireContact(ctx.owner, ctx.review);
+    if (ctx.contacts) return { status: "cached" };
+    key = contactKey(ctx.owner!, ctx.review.owner_type);
+    provider = "melissa";
+  }
+  const pending = (
+    await db.query(
+      "SELECT id,status FROM enrichment_jobs WHERE cache_key=$1 AND kind=$2 AND status IN ('queued','running')",
+      [key, kind],
+    )
+  ).rows[0];
+  if (pending) return pending;
+  const state = await providerStatus(db, provider);
+  if (!state.available) throw new HttpError(409, state.message);
+  if (!lead.address)
+    throw new HttpError(422, "A project address is required.");
+  return (
+    await db.query(
+      "INSERT INTO enrichment_jobs(lead_id,cache_key,kind) VALUES($1,$2,$3) RETURNING id,status",
+      [lead.id, key, kind],
+    )
+  ).rows[0];
 }
 // Provider payloads have variable nested schemas; every identity field is checked below.
 type ProviderRecord = Record<string, any>;

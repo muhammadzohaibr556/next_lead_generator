@@ -1,9 +1,14 @@
 import { z } from "zod";
-import { pool } from "./db";
+import { pool, transaction, type DB } from "./db";
 import { findLeads, leadQuery, leadDict, LEAD_SELECT, mapLeads } from "./leads";
-import { SOURCES, RULES, number } from "./engine";
+import { SOURCES, RULES, number, digest } from "./engine";
 import { queueSource } from "./ingest";
-import { enrichmentDetails, queueEnrichment, reviewOwner } from "./enrichment";
+import {
+  enrichmentDetails,
+  queueEnrichment,
+  queueEnrichmentInTransaction,
+  reviewOwner,
+} from "./enrichment";
 import {
   filterSchema,
   leadUpdate,
@@ -13,9 +18,14 @@ import {
   type Filters,
 } from "./validation";
 import { jsonRequest, PARCEL } from "./sources";
-import { security } from "./security";
-export async function leadDetail(leadId: number) {
-  const db = pool(),
+import { externalSecurity, security } from "./security";
+import {
+  externalLeadDetail,
+  externalFindLeads,
+  externalLeadQuerySchema,
+} from "./external-api";
+export async function leadDetail(leadId: number, connection: DB = pool()) {
+  const db = connection,
     row = (
       await db.query(`SELECT * FROM (${LEAD_SELECT}) lead_view WHERE id=$1`, [
         leadId,
@@ -319,16 +329,165 @@ async function body(request: Request) {
     throw new HttpError(400, "Invalid JSON");
   }
 }
+function externalError(e: unknown) {
+  if (e instanceof z.ZodError)
+    return Response.json(
+      {
+        code: "INVALID_REQUEST",
+        detail: e.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; "),
+      },
+      { status: 422, headers: { "Cache-Control": "no-store" } },
+    );
+  if (e instanceof HttpError)
+    return Response.json(
+      { code: e.status === 404 ? "NOT_FOUND" : "INVALID_REQUEST", detail: e.message },
+      { status: e.status, headers: { "Cache-Control": "no-store" } },
+    );
+  console.error("External API operation failed:", e instanceof Error ? e.name : "Error");
+  return Response.json(
+    { code: "SERVICE_UNAVAILABLE", detail: "The external API could not complete this request." },
+    { status: 503, headers: { "Cache-Control": "no-store" } },
+  );
+}
+async function handleExternalApi(
+  request: Request,
+  url: URL,
+  path: string[],
+) {
+  const denied = externalSecurity(request);
+  if (denied) return denied;
+  try {
+    if (request.method === "GET" && path.length === 2 && path[1] === "health") {
+      await pool().query("SELECT 1");
+      return Response.json(
+        { status: "ok", api_version: "v1" },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    if (request.method === "GET" && path.length === 2 && path[1] === "coverage")
+      return Response.json(await coverage(), { headers: { "Cache-Control": "no-store" } });
+    if (request.method === "GET" && path.length === 2 && path[1] === "leads") {
+      const input = externalLeadQuerySchema.parse(
+        Object.fromEntries([...url.searchParams].filter(([, value]) => value !== "")),
+      );
+      return Response.json(await externalFindLeads(input), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+    if (request.method === "GET" && path.length === 3 && path[1] === "leads") {
+      const leadId = id(path[2]);
+      return Response.json(await externalLeadDetail(leadId), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+    if (
+      request.method === "GET" &&
+      path.length === 4 &&
+      path[1] === "leads" &&
+      path[3] === "enrichment"
+    ) {
+      const lead = await leadDetail(id(path[2]));
+      const enrichment = lead.enrichment;
+      return Response.json(
+        {
+          lead_id: lead.id,
+          owner: {
+            available: Boolean(enrichment.owner),
+            reviewed: enrichment.review.reviewed,
+            type: enrichment.review.owner_type,
+          },
+          contacts: {
+            available: Boolean(enrichment.contacts),
+            verified: enrichment.review.contacts_verified,
+            suppressed: enrichment.review.suppressed,
+          },
+          jobs: enrichment.jobs,
+          providers: enrichment.providers,
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    if (
+      request.method === "POST" &&
+      path.length === 4 &&
+      path[1] === "leads" &&
+      path[3] === "enrich"
+    ) {
+      const key = request.headers.get("idempotency-key")?.trim() || "";
+      if (!key || key.length > 200)
+        throw new HttpError(422, "Idempotency-Key header is required");
+      const input = z
+        .object({ kind: z.enum(["owner", "contacts"]) })
+        .strict()
+        .parse(await body(request));
+      const leadId = id(path[2]);
+      const result = await transaction(async (db) => {
+        const requestHash = digest({ endpoint: request.url, input });
+        const existing = (
+          await db.query(
+            "SELECT request_hash,response_status,response FROM external_api_idempotency WHERE idempotency_key=$1 FOR UPDATE",
+            [key],
+          )
+        ).rows[0];
+        if (existing) {
+          if (existing.request_hash !== requestHash)
+            throw new HttpError(409, "Idempotency-Key was already used for another request");
+          return {
+            body: existing.response || { status: "pending", idempotency_key: key },
+            status: existing.response_status || 202,
+          };
+        }
+        await db.query(
+          "INSERT INTO external_api_idempotency(idempotency_key,request_hash) VALUES($1,$2)",
+          [key, requestHash],
+        );
+        const lead = await leadDetail(leadId, db);
+        const queued = await queueEnrichmentInTransaction(db, lead, input.kind);
+        const response = { ...queued, idempotency_key: key };
+        const status = ["queued", "running"].includes(queued.status) ? 202 : 200;
+        await db.query(
+          "UPDATE external_api_idempotency SET response_status=$1,response=$2 WHERE idempotency_key=$3",
+          [status, JSON.stringify(response), key],
+        );
+        return { body: response, status };
+      });
+      return Response.json(result.body, {
+        status: result.status,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+    if (
+      request.method === "GET" &&
+      path.length === 3 &&
+      path[1] === "enrichment-jobs"
+    ) {
+      const job = (
+        await pool().query(
+          "SELECT id,lead_id,kind,status,queued_at,finished_at,message FROM enrichment_jobs WHERE id=$1",
+          [id(path[2])],
+        )
+      ).rows[0];
+      if (!job) throw new HttpError(404, "Enrichment job not found");
+      return Response.json(job, { headers: { "Cache-Control": "no-store" } });
+    }
+    throw new HttpError(404, "Endpoint not found");
+  } catch (e) {
+    return externalError(e);
+  }
+}
 export async function handleApi(request: Request) {
+  const url = new URL(request.url),
+    path = url.pathname
+      .replace(/^\/api\/?/, "")
+      .split("/")
+      .filter(Boolean);
+  if (path[0] === "v1") return handleExternalApi(request, url, path);
   const denied = security(request);
   if (denied) return denied;
   try {
-    const url = new URL(request.url),
-      path = url.pathname
-        .replace(/^\/api\/?/, "")
-        .split("/")
-        .filter(Boolean),
-      method = request.method;
+    const method = request.method;
     const filters = () =>
       filterSchema.parse(
         Object.fromEntries([...url.searchParams].filter(([, v]) => v !== "")),
