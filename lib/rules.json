@@ -1,0 +1,11 @@
+{
+  "Roofing": "\\b(?:re[- ]?roof(?:ing)?|roofing|shingles?|roof\\s+(?:replacement|repair|covering|tiles?|tear[- ]?off)|(?:repair(?:ing)?|replac(?:e|ing|ement of)|install(?:ing|ation of)?|new)\\s+(?:(?:the|an?|existing|new|fire|damaged|flat|sloped|metal|tile|clay|concrete|composition)\\s+){0,4}roofs?)\\b",
+  "Tile": "\\b(?:tiling|tile[sd]?|backsplash|terrazzo|(?:porcelain|ceramic)\\s+(?:floor|wall))\\b",
+  "HVAC": "\\b(?:hvac|furnace|air condition(?:ing|er)|heat pump|condenser|ductwork|a/?c (?:unit|system)|mechanical (?:permit|unit|system))\\b",
+  "Electrical": "\\b(?:electrical|rewir(?:e|ing)|panel upgrade|\\d+\\s*amp|evse|ev charger)\\b",
+  "Plumbing": "\\b(?:plumbing|re[- ]?pipe|sewer|water heater|drain line)\\b",
+  "Solar": "\\b(?:solar|photovoltaic|pv system)\\b",
+  "Remodeling": "\\b(?:remodel(?:ing)?|renovat(?:ion|e)|kitchen|bathroom|adu|accessory dwelling)\\b",
+  "New construction": "\\b(?:new construction|bldg[- ]new|new (?:single|two|multi)[- ]family|new\\s+(?:\\d+[- ]stor(?:y|ies)\\s+)?(?:sfd|sfr|dwelling|residence|building|home))\\b",
+  "Windows & doors": "\\b(?:window replacement|replace windows|door replacement)\\b"
+}
