@@ -11,7 +11,7 @@ export function pool(): Pool {
   return (globalPg.permitPool ??= new Pool({
     connectionString: process.env.DATABASE_URL,
     max: 10,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 30000,
     options: "-c timezone=UTC",
   }));
 }
