@@ -21,7 +21,7 @@ export default async function Layout({ children }: { children: ReactNode }) {
           rel="stylesheet"
           href="/static/vendor/leaflet/MarkerCluster.Default.css"
         />
-        <link rel="stylesheet" href="/static/style.css" />
+        <link rel="stylesheet" href="/static/style.css?v=atlas-blue-1" />
       </head>
       <body>{children}</body>
     </html>

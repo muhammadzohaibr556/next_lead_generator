@@ -145,12 +145,14 @@ function Action({
   children,
   className = "btn btn-outline-secondary",
   disabled = false,
+  pressed,
   title,
 }: {
   onClick: () => Promise<unknown>;
   children: ReactNode;
   className?: string;
   disabled?: boolean;
+  pressed?: boolean;
   title?: string;
 }) {
   const [busy, setBusy] = useState(false),
@@ -161,6 +163,7 @@ function Action({
       className={className}
       disabled={busy || disabled}
       aria-busy={busy}
+      aria-pressed={pressed}
       title={title}
       onClick={async () => {
         if (locked.current) return;
@@ -249,6 +252,11 @@ export default function Dashboard() {
     items = leads.data?.items || [],
     total = leads.data?.total || 0,
     connected = sources.data?.items || [];
+  const tradeCounts: Record<string, number | undefined> = {
+    "": stats?.trades.reduce((sum, trade) => sum + trade.total, 0),
+    Roofing: stats?.roofing,
+    Tile: stats?.tile,
+  };
   const busySync =
     sources.data?.runs.some((r) => ["queued", "running"].includes(r.status)) ||
     false;
@@ -714,6 +722,7 @@ export default function Dashboard() {
                           }
                         />
                         {trade || "All opportunities"}
+                        <span>{fmt(tradeCounts[trade])}</span>
                       </button>
                     ))}
                   </div>
@@ -1049,6 +1058,7 @@ export default function Dashboard() {
                                   className={
                                     "save-button " + (lead.saved ? "saved" : "")
                                   }
+                                  pressed={lead.saved}
                                   title={
                                     lead.saved
                                       ? "Remove from shortlist"
@@ -1056,13 +1066,7 @@ export default function Dashboard() {
                                   }
                                   onClick={() => save(lead)}
                                 >
-                                  <Icon
-                                    name={
-                                      lead.saved
-                                        ? "bookmark-filled"
-                                        : "bookmark"
-                                    }
-                                  />
+                                  <Icon name="bookmark" />
                                 </Action>
                               </td>
                               <td>
@@ -1601,6 +1605,11 @@ function LeadDialog({
             </label>
             <div className="detail-actions">
               <Action
+                className={
+                  "btn btn-outline-secondary detail-save-button " +
+                  (lead.saved ? "saved" : "")
+                }
+                pressed={lead.saved}
                 onClick={() =>
                   onAction(() =>
                     api("/api/leads/" + lead.id, {
