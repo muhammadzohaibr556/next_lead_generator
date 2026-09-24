@@ -8,7 +8,6 @@ import { today, SOURCES, digest, normalize } from "../lib/engine";
 import {
   queueEnrichment,
   runEnrichmentOne,
-  reviewOwner,
   enrichmentDetails,
   lookupKey,
 } from "../lib/enrichment";
@@ -355,7 +354,7 @@ test(
         },
       );
       await t.test(
-        "Enrichment enforces config, review, budgets and suppression",
+        "Enrichment keeps address contact lookup independent and budgeted",
         async () => {
           const lead = await leadDetail(leadId);
           await assert.rejects(queueEnrichment(lead, "owner"), /Not enabled/);
@@ -370,6 +369,7 @@ test(
               [provider + "_RIGHTS_CONFIRMED"]: "1",
               [provider + "_NO_CHARGE_CONFIRMED"]: "1",
             });
+          process.env.MELISSA_PERSONATOR_SEARCH_CONFIRMED = "1";
           const a = await queueEnrichment(lead, "owner"),
             b = await queueEnrichment(lead, "owner");
           assert.equal(a.id, b.id);
@@ -394,62 +394,42 @@ test(
           let ctx = await enrichmentDetails(pool(), lead);
           assert.equal(ctx.owner?.name, "EXAMPLE LLC");
           assert.equal(ctx.providers.realie.remaining_units, 1);
-          await assert.rejects(
-            queueEnrichment(lead, "contacts"),
-            /Review the matched owner/,
-          );
-          await reviewOwner(lead, { owner_type: "Company", reviewed: true });
-          await queueEnrichment(lead, "contacts");
+          const contactA = await queueEnrichment(lead, "contacts"),
+            contactB = await queueEnrichment(lead, "contacts");
+          assert.equal(contactA.id, contactB.id);
           globalThis.fetch = async () =>
             Response.json({
+              TransmissionResults: "US01",
               Records: [
                 {
-                  CurrentCompanyName: "EXAMPLE LLC",
-                  AddressLine1: "10 Main Street",
-                  State: "CA",
-                  PostalCode: "90001",
-                  Results: "FS01",
-                  Phone: "555-0100",
+                  FullName: "Jane Example",
+                  MelissaIdentityKey: "MIK-1",
+                  CurrentAddress: {
+                    AddressLine1: "123 Test Street",
+                    City: "Los Angeles",
+                    State: "CA",
+                    PostalCode: "90001",
+                  },
+                  Results: "VR01",
+                  PhoneRecords: [{ phoneNumber: "555-0100" }],
+                  EmailRecords: [],
                 },
               ],
             });
           await runEnrichmentOne();
           ctx = await enrichmentDetails(pool(), lead);
           assert.equal(ctx.contacts?.candidates[0].phone, "555-0100");
-          await reviewOwner(lead, { contacts_verified: true });
-          assert.equal(
-            (await enrichmentDetails(pool(), lead)).review.contacts_verified,
-            true,
-          );
-          await reviewOwner(lead, { suppressed: true });
-          assert.equal((await enrichmentDetails(pool(), lead)).contacts, null);
-          await assert.rejects(queueEnrichment(lead, "contacts"), /suppressed/);
-          await reviewOwner(lead, { suppressed: false });
           await pool().query("DELETE FROM enrichment_results WHERE kind=$1", [
             "contacts",
           ]);
           await queueEnrichment(lead, "contacts");
-          globalThis.fetch = async () => {
-            await reviewOwner(lead, { suppressed: true });
-            return Response.json({
-              Records: [
-                {
-                  CurrentCompanyName: "EXAMPLE LLC",
-                  AddressLine1: "10 Main Street",
-                  State: "CA",
-                  PostalCode: "90001",
-                  Results: "FS01",
-                  Phone: "555-0100",
-                },
-              ],
-            });
-          };
+          globalThis.fetch = async () =>
+            Response.json({ TransmissionResults: "UE04", Records: [] });
           await runEnrichmentOne();
           ctx = await enrichmentDetails(pool(), lead);
           assert.equal(ctx.contacts, null);
-          assert.equal(ctx.jobs[0].status, "blocked");
+          assert.equal(ctx.jobs[0].status, "unmatched");
           assert.equal(ctx.providers.melissa.remaining_units, 0);
-          await reviewOwner(lead, { suppressed: false });
           await assert.rejects(queueEnrichment(lead, "contacts"), /exhausted/);
         },
       );

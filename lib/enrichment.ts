@@ -17,10 +17,31 @@ export const cleanId = (v: unknown) =>
   text(v)
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "");
+const unitId = (v: unknown) =>
+  cleanId(
+    text(v).replace(
+      /^(?:APARTMENT|APT|SUITE|STE|UNIT|FLOOR|FL|#)\s*/i,
+      "",
+    ),
+  );
 export function splitUnit(v: unknown): [string, string] {
   const s = addressKey(text(v)).replace(/ STE /g, " UNIT "),
-    m = s.match(/\s+(?:UNIT\s+|#\s*)(.+)$/);
-  return m ? [s.slice(0, m.index).trim(), cleanId(m[1])] : [s, ""];
+    m = s.match(/\s+(?:(?:UNIT|FLOOR|FL)\s+|#\s*)(.+)$/);
+  return m ? [s.slice(0, m.index).trim(), unitId(m[1])] : [s, ""];
+}
+export function sameStreet(a: string, b: string) {
+  if (a === b) return true;
+  const parts = (value: string) => value.split(" "),
+    directions = (value: string) =>
+      parts(value).filter((part) => /^(N|S|E|W)$/.test(part)),
+    aDirections = directions(a),
+    bDirections = directions(b);
+  if (aDirections.length + bDirections.length !== 1) return false;
+  const withoutDirection = (value: string) =>
+    parts(value)
+      .filter((part) => !/^(N|S|E|W)$/.test(part))
+      .join(" ");
+  return withoutDirection(a) === withoutDirection(b);
 }
 export function ownerType(name: string) {
   return /\b(TRUST|TRUSTEE|ESTATE|TRUSTEES|CITY OF|COUNTY OF)\b/i.test(name)
@@ -169,8 +190,7 @@ async function ownerContext(db: DB, lead: Permit) {
     ).rows[0]?.owner_key || key;
   return { key, owner: await cached<Owner>(db, key) };
 }
-const contactKey = (owner: Owner, kind: string) =>
-  "contacts:" + digest([owner.identity_hash, kind]);
+const contactKey = (lead: Permit) => "contacts:address:" + locationKey(lead);
 export async function enrichmentDetails(db: DB, lead: Permit) {
   const { key, owner } = await ownerContext(db, lead);
   const review: Review = (
@@ -195,14 +215,9 @@ export async function enrichmentDetails(db: DB, lead: Permit) {
     ).rowCount
   )
     review.suppressed = true;
-  let contacts = owner
-    ? await cached<Contacts>(db, contactKey(owner, review.owner_type))
-    : null;
-  if (!contacts || review.contact_hash !== contacts.identity_hash)
-    review.contacts_verified = false;
-  if (review.suppressed) contacts = null;
-  const keys = [lookupKey(lead), key];
-  if (owner) keys.push(contactKey(owner, review.owner_type));
+  const contacts = await cached<Contacts>(db, contactKey(lead));
+  review.contacts_verified = false;
+  const keys = [lookupKey(lead), key, contactKey(lead)];
   const jobs = (
     await db.query(
       "SELECT id,kind,status,queued_at,finished_at,message FROM enrichment_jobs WHERE cache_key=ANY($1::text[]) ORDER BY id DESC LIMIT 6",
@@ -225,8 +240,8 @@ export async function enrichmentDetails(db: DB, lead: Permit) {
       realie: await providerStatus(db, "realie"),
       melissa: await providerStatus(db, "melissa"),
     },
-    consumer_append_enabled:
-      process.env.MELISSA_CONSUMER_APPEND_CONFIRMED === "1",
+    personator_search_enabled:
+      process.env.MELISSA_PERSONATOR_SEARCH_CONFIRMED === "1",
   };
 }
 export type EnrichmentDetails = Awaited<ReturnType<typeof enrichmentDetails>>;
@@ -250,11 +265,10 @@ export async function reviewOwner(
       reviewed = update.reviewed ?? false;
       verified = false;
     }
-    const contacts = await cached<Contacts>(db, contactKey(owner, selected));
-    if (verified && (!contacts?.candidates.length || !reviewed))
+    if (verified)
       throw new HttpError(
         409,
-        "Review the owner and returned contact identity first.",
+        "Address-associated contacts cannot be verified as property owners.",
       );
     const suppressed = update.suppressed ?? current.suppressed;
     if (suppressed) verified = false;
@@ -266,7 +280,7 @@ export async function reviewOwner(
         owner.identity_hash,
         selected,
         reviewed,
-        contacts?.identity_hash || "",
+        "",
         verified,
         suppressed,
       ],
@@ -279,41 +293,16 @@ export async function reviewOwner(
     return { ok: true };
   });
 }
-function requireContact(owner: Owner | null, review: Review) {
-  if (
-    !owner ||
-    !review.reviewed ||
-    !["Person", "Company"].includes(review.owner_type)
-  )
+function requireContact(lead: Permit) {
+  if (process.env.MELISSA_PERSONATOR_SEARCH_CONFIRMED !== "1")
     throw new HttpError(
       409,
-      "Review the matched owner and choose Person or Company first.",
+      "Melissa Personator Search requires a separately confirmed trial entitlement.",
     );
-  if (review.suppressed)
+  if (!lead.address || !lead.state || (!lead.zip && !lead.city))
     throw new HttpError(
-      409,
-      "This owner is suppressed; contact lookup is disabled.",
-    );
-  if (
-    review.owner_type === "Person" &&
-    process.env.MELISSA_CONSUMER_APPEND_CONFIRMED !== "1"
-  )
-    throw new HttpError(
-      409,
-      "Melissa consumer Append requires a separately confirmed trial entitlement.",
-    );
-  if (
-    ![
-      owner.name,
-      owner.mailing_address,
-      owner.mailing_city,
-      owner.mailing_state,
-      owner.mailing_zip,
-    ].every(Boolean)
-  )
-    throw new HttpError(
-      409,
-      "A complete owner mailing address is required for contact matching.",
+      422,
+      "A project address with ZIP or city/state is required for contact lookup.",
     );
 }
 export async function queueEnrichment(
@@ -335,9 +324,9 @@ export async function queueEnrichmentInTransaction(
     key = lookupKey(lead);
     provider = "realie";
   } else {
-    requireContact(ctx.owner, ctx.review);
+    requireContact(lead);
     if (ctx.contacts) return { status: "cached" };
-    key = contactKey(ctx.owner!, ctx.review.owner_type);
+    key = contactKey(lead);
     provider = "melissa";
   }
   const pending = (
@@ -360,6 +349,7 @@ export async function queueEnrichmentInTransaction(
 }
 // Provider payloads have variable nested schemas; every identity field is checked below.
 type ProviderRecord = Record<string, any>;
+class ProviderRejectedError extends Error {}
 export function parseRealie(
   data: ProviderRecord,
   lead: Permit,
@@ -441,93 +431,105 @@ export function parseRealie(
 }
 export function parseContacts(
   data: ProviderRecord,
-  owner: Owner,
-  kind: string,
+  lead: Permit,
 ): Contacts {
-  if (
-    text(data?.TransmissionResults) ||
-    !Array.isArray(data?.Records) ||
-    data.Records.length !== 1
-  )
-    throw Error("Contact provider could not resolve a unique identity");
-  const r = data.Records[0],
-    codes = new Set<string>(text(r.Results).split(",").filter(Boolean)),
-    name = text(kind === "Company" ? r.CurrentCompanyName : r.NameFull);
-  const tokens = (v: string) =>
-    JSON.stringify(
-      v
-        .toUpperCase()
-        .match(/[A-Z0-9]+/g)
-        ?.sort() || [],
-    );
-  let [street, unit] = splitUnit(
-    [text(r.AddressLine1), text(r.AddressLine2 || r.Suite)]
-      .filter(Boolean)
-      .join(" "),
+  const transmissionCodes: string[] = Array.from(
+    text(data?.TransmissionResults).match(/[A-Z]{2}\d{2}/g) || [],
   );
-  if (kind === "Company" && r.Suite && !unit) {
-    street = splitUnit(r.AddressLine1)[0];
-    unit = cleanId(r.Suite);
-  }
-  const expected = splitUnit(owner.mailing_address);
-  if (
-    !name ||
-    tokens(name) !== tokens(owner.name) ||
-    street !== expected[0] ||
-    unit !== expected[1]
-  )
-    throw Error("Contact identity mismatch");
-  if (
-    text(r.State).toUpperCase() !== owner.mailing_state.toUpperCase() ||
-    text(r.PostalCode).slice(0, 5) !== owner.mailing_zip.slice(0, 5)
-  )
-    throw Error("Contact mailing location mismatch");
-  if (
-    [...codes].some((c) => /^(GE|SE|AE|DE)/.test(c)) ||
-    (kind === "Company" && !codes.has("FS01"))
-  )
+  if (transmissionCodes.some((code) => /^(GE|SE)/.test(code)))
+    throw new ProviderRejectedError(
+      `Contact provider rejected the request (${transmissionCodes.join(", ")})`,
+    );
+  if (!transmissionCodes.some((code) => code === "US01" || code === "US02"))
+    throw Error(
+      `Personator Search returned ${transmissionCodes.join(", ") || "no match code"}`,
+    );
+  if (!Array.isArray(data?.Records) || !data.Records.length)
+    throw Error("No people were returned for this address");
+  const expected = splitUnit(lead.address);
+  const matches = data.Records.filter((record: ProviderRecord) => {
+    const r = record.CurrentAddress || {},
+      name = text(record.FullName),
+      [street, embeddedUnit] = splitUnit(r.AddressLine1),
+      unit = unitId(r.AddressLine2 || r.Suite) || embeddedUnit,
+      codes = text(record.Results).split(",");
+    return (
+      !!name &&
+      sameStreet(street, expected[0]) &&
+      (!expected[1] || unit === expected[1]) &&
+      text(r.State).toUpperCase() === lead.state.toUpperCase() &&
+      (!lead.zip ||
+        text(r.PostalCode).slice(0, 5) === lead.zip.slice(0, 5)) &&
+      (!lead.city || text(r.City).toUpperCase() === lead.city.toUpperCase()) &&
+      !codes.includes("VS01") &&
+      (!expected[1] || !codes.includes("VS02"))
+    );
+  });
+  if (!matches.length)
+    throw Error(
+      `Contact address mismatch (${data.Records.length} returned, 0 matched)`,
+    );
+  const codes = new Set<string>(
+      matches.flatMap((record: ProviderRecord) =>
+        text(record.Results).split(",").filter(Boolean),
+      ),
+    );
+  if ([...codes].some((code) => /^(GE|SE|AE|DE)/.test(code)))
     throw Error("Contact match unconfirmed");
-  if (
-    kind === "Person" &&
-    (!codes.has("VR01") ||
-      ["VS01", "VS02", "VS12", "VS13"].some((c) => codes.has(c)))
-  )
-    throw Error("Current complete address match required");
-  let candidates: Contacts["candidates"] = [];
-  if (kind === "Company") {
-    if (text(r.Phone))
+  const identities = new Map<
+    string,
+    { name: string; phones: Set<string>; emails: Set<string> }
+  >();
+  for (const [index, record] of matches.entries()) {
+    const key = text(record.MelissaIdentityKey) || `record-${index}`,
+      identity = identities.get(key) || {
+        name: text(record.FullName),
+        phones: new Set<string>(),
+        emails: new Set<string>(),
+      };
+    for (const phone of Array.isArray(record.PhoneRecords)
+      ? record.PhoneRecords
+      : []) {
+      const value = text(
+        phone.PhoneNumber || phone.phoneNumber || phone.Phone || phone.phone,
+      );
+      if (value) identity.phones.add(value);
+    }
+    for (const email of Array.isArray(record.EmailRecords)
+      ? record.EmailRecords
+      : []) {
+      const value = text(
+        email.EmailAddress || email.emailAddress || email.Email || email.email,
+      );
+      if (value) identity.emails.add(value);
+    }
+    identities.set(key, identity);
+  }
+  const candidates: Contacts["candidates"] = [];
+  for (const identity of identities.values()) {
+    const phones = [...identity.phones],
+      emails = [...identity.emails],
+      rows = Math.max(1, phones.length, emails.length);
+    for (let i = 0; i < rows; i++)
       candidates.push({
-        name,
-        role: "Business office",
-        phone: text(r.Phone),
-        email: "",
+        name: identity.name,
+        role: "Person associated with address",
+        phone: phones[i] || "",
+        email: emails[i] || "",
       });
-    if (r.Contacts && !Array.isArray(r.Contacts))
-      throw Error("Invalid contact records");
-    for (const p of r.Contacts || [])
-      candidates.push({
-        name: [text(p.NameFirst), text(p.NameLast)].filter(Boolean).join(" "),
-        role: text(p.Title) || "Business contact",
-        phone: text(p.ContactPhone),
-        email: text(p.Email),
-      });
-  } else
-    candidates.push({
-      name,
-      role: "Owner candidate",
-      phone: text(r.PhoneNumber),
-      email: text(r.EmailAddress),
-    });
-  candidates = candidates.filter((c) => c.phone || c.email);
+  }
   return {
     provider: "Melissa",
-    owner_identity_hash: owner.identity_hash,
+    owner_identity_hash: locationKey(lead),
     identity_hash: digest(candidates),
     candidates,
-    result_codes: [...codes].sort(),
-    match_status: "Candidate · identity verification needed",
-    source_url: "https://www.melissa.com/",
-    owner_type: kind,
+    result_codes: [...new Set([...transmissionCodes, ...codes])].sort(),
+    match_status: codes.has("VS02")
+      ? "Building address match · unit and ownership not verified"
+      : "Address match · ownership not verified",
+    source_url:
+      "https://docs.melissa.com/cloud-api/personator-search/personator-search-index.html",
+    owner_type: "Address",
   };
 }
 class ProviderHttpError extends Error {
@@ -569,60 +571,37 @@ async function fetchOwner(
   }
 }
 async function fetchContacts(
-  owner: Owner,
-  kind: string,
+  lead: Permit,
   cfg: ReturnType<typeof providerConfig>,
 ) {
-  const person = kind === "Person",
-    url = person
-      ? "https://personator.melissadata.net/v3/WEB/ContactVerify/doContactVerify"
-      : "https://businesscoder.melissadata.net/WEB/BusinessCoder/doBusinessCoderUS";
-  const body = person
-    ? {
-        CustomerID: cfg.key,
-        Actions: "Check,Verify,Append",
-        Options: "Append:blank,CentricHint:Address",
-        Records: [
-          {
-            RecordID: "1",
-            FullName: owner.name,
-            AddressLine1: owner.mailing_address,
-            City: owner.mailing_city,
-            State: owner.mailing_state,
-            PostalCode: owner.mailing_zip,
-            Country: "US",
-          },
-        ],
-      }
-    : {
-        id: cfg.key,
-        cols: "Contacts,Phone",
-        opt: "ReturnDominantBusiness:no,CentricHint:company,MaxContacts:3",
-        Records: [
-          {
-            rec: "1",
-            comp: owner.name,
-            a1: owner.mailing_address,
-            city: owner.mailing_city,
-            state: owner.mailing_state,
-            postal: owner.mailing_zip,
-            ctry: "US",
-          },
-        ],
-      };
+  const url = new URL(
+    "https://personatorsearch.melissadata.net/WEB/doPersonatorSearch",
+  );
+  url.search = new URLSearchParams({
+    id: cfg.key,
+    format: "JSON",
+    t: "PermitAtlas",
+    a1: lead.address,
+    city: lead.city,
+    state: lead.state,
+    postal: lead.zip,
+    cols: "Phone,Email,MelissaIdentityKey",
+    opt: "SearchConditions:loose,SearchType:AddressSearch,ShowAllRecords,ReturnAllPages:true,MaxPhone:3,MaxEmail:3",
+  }).toString();
   const response = await fetch(url, {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(20000),
     redirect: "error",
     cache: "no-store",
   });
   if (!response.ok) throw new ProviderHttpError(response.status);
   try {
-    return parseContacts(await response.json(), owner, kind);
-  } catch {
-    throw new UnmatchedError();
+    return parseContacts(await response.json(), lead);
+  } catch (e) {
+    if (e instanceof ProviderRejectedError) throw e;
+    throw new UnmatchedError(
+      e instanceof Error ? e.message : "No reliable match returned",
+    );
   }
 }
 export async function runEnrichmentOne() {
@@ -650,15 +629,13 @@ export async function runEnrichmentOne() {
       await db.query("SELECT id,payload FROM leads WHERE id=$1", [job.lead_id])
     ).rows[0];
     if (!row) return block("Lead no longer exists.");
-    const lead = { ...row.payload, id: row.id } as Permit & { id: number },
-      ctx = await enrichmentDetails(db, lead);
+    const lead = { ...row.payload, id: row.id } as Permit & { id: number };
     if (job.kind === "contacts") {
       try {
-        requireContact(ctx.owner, ctx.review);
-        if (contactKey(ctx.owner!, ctx.review.owner_type) !== job.cache_key)
-          throw Error();
+        requireContact(lead);
+        if (contactKey(lead) !== job.cache_key) throw Error();
       } catch {
-        return block("Owner review changed or contact lookup is suppressed.");
+        return block("Project address changed or contact lookup is unavailable.");
       }
     } else if (lookupKey(lead) !== job.cache_key)
       return block("Project address changed; request a new match.");
@@ -675,37 +652,28 @@ export async function runEnrichmentOne() {
       provider,
       cfg,
       lead,
-      owner: ctx.owner,
-      review: ctx.review,
     };
   });
   if (!work) return false;
   if (work.blocked) return true;
-  const { job, provider, cfg, lead, owner, review } = work;
+  const { job, provider, cfg, lead } = work;
   try {
     const result =
       job.kind === "owner"
         ? await fetchOwner(lead, cfg)
-        : await fetchContacts(owner!, review.owner_type, cfg);
+        : await fetchContacts(lead, cfg);
     const expires = new Date(
-      Math.min(
-        Date.now() + cfg.days * 86400000,
-        cfg.expiry,
-        job.kind === "contacts" ? Date.parse(owner!.expires_at!) : Infinity,
-      ),
+      Math.min(Date.now() + cfg.days * 86400000, cfg.expiry),
     ).toISOString();
     await transaction(async (db) => {
       await enrichmentLock(db);
       if (job.kind === "contacts") {
-        const latest = await enrichmentDetails(db, lead);
-        if (
-          latest.review.suppressed ||
-          !latest.review.reviewed ||
-          !latest.owner ||
-          contactKey(latest.owner, latest.review.owner_type) !== job.cache_key
-        ) {
+        const row = (
+          await db.query("SELECT payload FROM leads WHERE id=$1", [lead.id])
+        ).rows[0];
+        if (!row || contactKey(row.payload as Permit) !== job.cache_key) {
           await db.query(
-            "UPDATE enrichment_jobs SET status='blocked',finished_at=now(),message='Identity review changed during lookup; results discarded.' WHERE id=$1",
+            "UPDATE enrichment_jobs SET status='blocked',finished_at=now(),message='Project address changed during lookup; results discarded.' WHERE id=$1",
             [job.id],
           );
           return;
@@ -745,16 +713,20 @@ export async function runEnrichmentOne() {
     });
   } catch (e) {
     const status =
-      e instanceof ProviderHttpError
+      e instanceof ProviderRejectedError
+        ? "blocked"
+        : e instanceof ProviderHttpError
         ? "failed"
         : e instanceof UnmatchedError
           ? "unmatched"
           : "uncertain";
     const message =
-      e instanceof ProviderHttpError
+      e instanceof ProviderRejectedError
+        ? `${e.message}; contact lookup is unavailable.`
+        : e instanceof ProviderHttpError
         ? `Provider returned HTTP ${e.code}; no automatic retry.`
         : e instanceof UnmatchedError
-          ? "No reliable match returned; owner/contact details were not guessed."
+          ? `${e.message}; address contact details were not guessed.`
           : "Provider request outcome uncertain; check trial usage before retrying.";
     await pool().query(
       "UPDATE enrichment_jobs SET status=$1,finished_at=now(),message=$2 WHERE id=$3",

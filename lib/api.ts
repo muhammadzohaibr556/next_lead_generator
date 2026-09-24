@@ -400,8 +400,8 @@ async function handleExternalApi(
           },
           contacts: {
             available: Boolean(enrichment.contacts),
-            verified: enrichment.review.contacts_verified,
-            suppressed: enrichment.review.suppressed,
+            verified: false,
+            suppressed: false,
           },
           jobs: enrichment.jobs,
           providers: enrichment.providers,

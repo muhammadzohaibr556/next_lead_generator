@@ -90,15 +90,14 @@ export function decodeCursor(value: string): ExternalCursor {
 }
 
 type EnrichmentView = {
-  review?: { reviewed?: boolean; suppressed?: boolean };
+  review?: { reviewed?: boolean };
   contacts?: {
     candidates?: { email?: string; phone?: string }[];
   } | null;
 };
 
 export function normalizeExternalLead(lead: Lead, enrichment?: EnrichmentView) {
-  const suppressed = enrichment?.review?.suppressed === true;
-  const firstContact = suppressed ? undefined : enrichment?.contacts?.candidates?.[0];
+  const firstContact = enrichment?.contacts?.candidates?.[0];
   return {
     id: lead.id,
     version: `${lead.id}:${lead.updated_at}`,
@@ -131,7 +130,7 @@ export function normalizeExternalLead(lead: Lead, enrichment?: EnrichmentView) {
       email: firstContact?.email || null,
       phone: firstContact?.phone || null,
       confidence: null,
-      suppressed,
+      suppressed: false,
     },
     updatedAt: lead.updated_at,
   };

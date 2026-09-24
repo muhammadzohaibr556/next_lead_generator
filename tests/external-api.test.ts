@@ -10,6 +10,11 @@ import {
 import { externalSecurity } from "../lib/security";
 
 test("external lead filters translate age and location into the internal query contract", () => {
+  const since = new Date(
+    Date.parse(new Date().toISOString().slice(0, 10)) - 13 * 86400000,
+  )
+    .toISOString()
+    .slice(0, 10);
   const input = externalLeadQuerySchema.parse({
     city: "Los Angeles",
     latitude: "34.05",
@@ -27,7 +32,7 @@ test("external lead filters translate age and location into the internal query c
     center_lon: -118.25,
     radius_miles: 10,
     trade: "Roofing",
-    since: "2026-09-09",
+    since,
     limit: 5,
     sort: "score",
     offset: 0,
@@ -50,7 +55,7 @@ test("cursor encoding round trips an opaque cursor", () => {
   assert.deepEqual(decodeCursor(encodeCursor(cursor)), cursor);
 });
 
-test("normalized lead responses omit suppressed contact details", () => {
+test("normalized lead responses return address contacts independently of owner review", () => {
   const lead = {
     id: 17,
     updated_at: "2026-09-22T12:00:00.000Z",
@@ -102,7 +107,12 @@ test("normalized lead responses omit suppressed contact details", () => {
         reasons: [],
       },
       owner: { name: "Example Owner", confidence: null, reviewed: true },
-      contacts: { email: null, phone: null, confidence: null, suppressed: true },
+      contacts: {
+        email: "owner@example.test",
+        phone: "555-0100",
+        confidence: null,
+        suppressed: false,
+      },
       updatedAt: "2026-09-22T12:00:00.000Z",
     },
   );

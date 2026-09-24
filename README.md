@@ -40,7 +40,7 @@ Environment precedence: shell environment, `.env.local`, then `.env`. Restart bo
 - Leaflet clustered maps, shared radius filters, Census geocoding, and explicit location provenance.
 - All 15 existing municipal feeds across 10 jurisdictions: Socrata, ArcGIS, San Diego annual CSVs and San José CSVs.
 - Canonical permit/project identity, versioned raw evidence, conservative trade classification and scores that decay at read time.
-- LA County exact-parcel lookup, Realie owner matching and Melissa contact matching, with the existing review, suppression, caching and trial-budget controls.
+- LA County exact-parcel lookup, optional Realie owner matching and independent Melissa address-contact search, with caching and trial-budget controls.
 - Next.js JSON endpoints under `/api/*`; endpoint and filter documentation at `/docs`.
 
 ## Database and jobs
@@ -61,11 +61,11 @@ This preserves saved status, notes and assignments. Radius queries use a latitud
 
 Public permit imports and Census lookups need no paid account. `SOCRATA_APP_TOKEN` is optional and sent only to Socrata.
 
-Owner/contact lookups require all provider settings in `.env.example`: credentials, licensed use rights, confirmed no-charge entitlement, a timezone-qualified expiry, a trial identifier, remaining units exclusively allocated to this app, worst-case units per request, and permitted cache days. Personator Consumer Append requires its separate entitlement flag. No provider request is made until a user requests it.
+Owner/contact lookups require all provider settings in `.env.example`: credentials, licensed use rights, confirmed no-charge entitlement, a timezone-qualified expiry, a trial identifier, remaining units exclusively allocated to this app, worst-case units per request, and permitted cache days. Contact lookup uses Personator Search with the permit address and requires its separate entitlement flag. It does not use Realie or claim that returned people own the property. No provider request is made until a user requests it.
 
 The fresh database has no old trial-usage ledger. The local setup therefore overrides `REALIE_NO_CHARGE_CONFIRMED=0` and `MELISSA_NO_CHARGE_CONFIRMED=0` in `.env.local`. Before enabling these, allocate the actual remaining allowance for this fresh workspace; do not reuse the original allowance as if previous requests never happened. Replacing a database does not reset a provider account's usage.
 
-Matching rejects wrong units, parcels, localities or identities. Owner review is required before contact lookup. Suppression applies across matching owner identities. Costs are reserved before dispatch and retained after failures or uncertain outcomes. Expired results are removed by the worker; provider contact fields never appear in CSV exports.
+Matching rejects wrong units, parcels and localities. Melissa results are labeled as people associated with the address because the address search does not establish ownership. Costs are reserved before dispatch and retained after failures or uncertain outcomes. Expired results are removed by the worker; provider contact fields never appear in CSV exports.
 
 ## Checks
 

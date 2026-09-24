@@ -16,6 +16,7 @@ import {
   parseRealie,
   parseContacts,
   splitUnit,
+  sameStreet,
   ownerType,
   providerConfig,
 } from "../lib/enrichment";
@@ -125,35 +126,176 @@ test("Identity parsers require exact owner, unit and provider confirmation", () 
   );
   assert.throws(() => parseRealie(payload, lead, "Orange", true));
   assert.deepEqual(splitUnit("10 Main Street Apt 2"), ["10 MAIN ST", "2"]);
+  assert.deepEqual(splitUnit("1455 Market St Fl 7"), ["1455 MARKET ST", "7"]);
+  assert.deepEqual(splitUnit("10 Mount Royal Drive"), ["10 MT ROYAL DR", ""]);
+  assert.equal(sameStreet("5139 MT ROYAL DR", "5139 N MT ROYAL DR"), true);
+  assert.equal(sameStreet("5139 S MT ROYAL DR", "5139 N MT ROYAL DR"), false);
   assert.equal(ownerType("Jane Smith"), "Unknown");
-  const record = {
-    CurrentCompanyName: "EXAMPLE LLC",
-    AddressLine1: "10 Main Street",
-    State: "CA",
-    PostalCode: "90001",
-    Results: "FS01",
-    Phone: "555-0100",
-  };
+  assert.throws(
+    () =>
+      parseContacts(
+        { TransmissionResults: "GE08", Records: [] },
+        lead,
+      ),
+    /GE08/,
+  );
+  const addressLead = {
+      ...lead,
+      address: "5139 N Mt Royal Dr",
+      city: "Los Angeles",
+      state: "CA",
+      zip: "90041",
+    },
+    patrick = {
+      FullName: "Patrick K McGuire",
+      MelissaIdentityKey: "MIK-1",
+      CurrentAddress: {
+        AddressLine1: "5139 Mount Royal Dr",
+        City: "Los Angeles",
+        State: "CA",
+        PostalCode: "90041",
+      },
+      Results: "VR01,VS13",
+      PhoneRecords: [{ phoneNumber: "8586038178" }],
+      EmailRecords: [],
+    },
+    elise = {
+      ...patrick,
+      FullName: "Elise McGuire",
+      MelissaIdentityKey: "MIK-2",
+      PhoneRecords: [],
+      EmailRecords: [{ email: "elise@example.com" }],
+    },
+    contacts = parseContacts(
+      { TransmissionResults: "US01", Records: [patrick, elise] },
+      addressLead,
+    );
+  assert.deepEqual(contacts.candidates, [
+    {
+      name: "Patrick K McGuire",
+      role: "Person associated with address",
+      phone: "8586038178",
+      email: "",
+    },
+    {
+      name: "Elise McGuire",
+      role: "Person associated with address",
+      phone: "",
+      email: "elise@example.com",
+    },
+  ]);
+  assert.deepEqual(contacts.result_codes, ["US01", "VR01", "VS13"]);
+  assert.equal(contacts.match_status, "Address match · ownership not verified");
+  const buildingContacts = parseContacts(
+    {
+      TransmissionResults: "US01",
+      Records: [
+        {
+          FullName: "Camila Escallon",
+          MelissaIdentityKey: "10614422075",
+          CurrentAddress: {
+            AddressLine1: "1455 Market St",
+            Suite: "Fl 2",
+            City: "San Francisco",
+            State: "CA",
+            PostalCode: "94103",
+          },
+          Results: "VS02",
+          PhoneRecords: [],
+          EmailRecords: [],
+        },
+      ],
+    },
+    {
+      ...addressLead,
+      address: "1455 Market St",
+      city: "San Francisco",
+      zip: "94103",
+    },
+  );
+  assert.deepEqual(buildingContacts.candidates, [
+    {
+      name: "Camila Escallon",
+      role: "Person associated with address",
+      phone: "",
+      email: "",
+    },
+  ]);
   assert.equal(
-    parseContacts({ Records: [record] }, owner, "Company").candidates.length,
+    buildingContacts.match_status,
+    "Building address match · unit and ownership not verified",
+  );
+  assert.throws(() =>
+    parseContacts(
+      {
+        TransmissionResults: "US01",
+        Records: [
+          {
+            ...patrick,
+            CurrentAddress: {
+              ...patrick.CurrentAddress,
+              AddressLine1: "1455 Market St",
+              Suite: "Fl 2",
+              City: "San Francisco",
+              PostalCode: "94103",
+            },
+            Results: "VS02",
+          },
+        ],
+      },
+      {
+        ...addressLead,
+        address: "1455 Market St Fl 7",
+        city: "San Francisco",
+        zip: "94103",
+      },
+    ),
+    /address mismatch/,
+  );
+  assert.equal(
+    parseContacts(
+      {
+        TransmissionResults: "US02",
+        Records: [{ ...patrick, PhoneRecords: [], EmailRecords: [] }],
+      },
+      addressLead,
+    ).candidates.length,
     1,
   );
   assert.throws(() =>
     parseContacts(
-      { Records: [{ ...record, CurrentCompanyName: "OTHER LLC" }] },
-      owner,
-      "Company",
+      {
+        TransmissionResults: "US02",
+        Records: [
+          {
+            ...patrick,
+            CurrentAddress: {
+              ...patrick.CurrentAddress,
+              AddressLine1: "99 Other Street",
+            },
+          },
+        ],
+      },
+      addressLead,
     ),
+    /address mismatch/,
   );
   assert.throws(() =>
     parseContacts(
-      { Records: [{ ...record, Results: "GE01" }] },
-      owner,
-      "Company",
+      { TransmissionResults: "US03", Records: [patrick] },
+      addressLead,
     ),
+    /US03/,
   );
   assert.throws(() =>
-    parseContacts({ Records: [record, record] }, owner, "Company"),
+    parseContacts(
+      {
+        TransmissionResults: "US01",
+        Records: [{ ...patrick, Results: "VR01,VS01" }],
+      },
+      addressLead,
+    ),
+    /address mismatch/,
   );
 });
 test("Workspace security and provider configuration fail closed", () => {

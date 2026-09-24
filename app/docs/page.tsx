@@ -22,7 +22,7 @@ const endpoints = [
   [
     "POST",
     "/api/leads/{id}/enrich?kind=contacts",
-    "Queue configured contact lookup after identity review",
+    "Search configured address contacts independently of owner enrichment",
   ],
   [
     "PATCH",

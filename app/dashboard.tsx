@@ -1646,195 +1646,41 @@ function Enrichment({
   id: number;
   onAction: (work: () => Promise<unknown>, message?: string) => Promise<void>;
 }) {
-  const { owner, contacts, review, providers, jobs } = data,
-    [busy, setBusy] = useState(false),
-    locked = useRef(false);
-  const pending = (kind: string) =>
-    jobs.some(
-      (j) => j.kind === kind && ["queued", "running"].includes(j.status),
-    );
+  const { contacts, providers } = data,
+    jobs = data.jobs.filter((job) => job.kind === "contacts"),
+    pending = jobs.some((job) => ["queued", "running"].includes(job.status));
   const contactAllowed =
-    !!owner &&
-    review.reviewed &&
-    ["Person", "Company"].includes(review.owner_type) &&
-    !review.suppressed &&
-    providers.melissa.available &&
-    (review.owner_type !== "Person" || data.consumer_append_enabled);
-  async function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (locked.current) return;
-    const form = new FormData(e.currentTarget);
-    locked.current = true;
-    setBusy(true);
-    try {
-      await onAction(
-        () =>
-          api("/api/leads/" + id + "/enrichment-review", {
-            method: "PATCH",
-            body: JSON.stringify({
-              owner_type: form.get("owner_type"),
-              reviewed: form.has("reviewed"),
-              suppressed: form.has("suppressed"),
-              contacts_verified: form.has("contacts_verified"),
-            }),
-          }),
-        "Identity review saved",
-      );
-    } finally {
-      locked.current = false;
-      setBusy(false);
-    }
-  }
-  const enrich = (kind: string) =>
+    providers.melissa.available && data.personator_search_enabled;
+  const enrich = () =>
     onAction(
       () =>
-        api("/api/leads/" + id + "/enrich?kind=" + kind, {
+        api("/api/leads/" + id + "/enrich?kind=contacts", {
           method: "POST",
           body: "{}",
         }),
-      "Lookup queued",
+      "Address search queued",
     );
   return (
     <>
-      <h3>Owner & contact research</h3>
+      <h3>Address contact research</h3>
       <p className="muted">
-        Lookups run only when requested. Ownership and contact matches do not
-        confirm job availability or permission to contact.
+        Melissa returns people associated with the permit address. They may be
+        residents, tenants, relatives or owners; ownership and permission to
+        contact are not verified.
       </p>
-      {owner ? (
-        <>
-          <dl className="detail-grid">
-            <div>
-              <dt>Recorded owner</dt>
-              <dd>
-                {owner.name}
-                {owner.second_owner && (
-                  <>
-                    <br />
-                    {owner.second_owner}
-                  </>
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>Owner mailing address</dt>
-              <dd>
-                {owner.mailing_address || "Not published"}
-                <br />
-                {[owner.mailing_city, owner.mailing_state, owner.mailing_zip]
-                  .filter(Boolean)
-                  .join(" ")}
-              </dd>
-            </div>
-            <div>
-              <dt>Property match</dt>
-              <dd>{owner.match_method}</dd>
-            </div>
-            <div>
-              <dt>Property characteristics</dt>
-              <dd>
-                {String(owner.year_built || "Year not published")} ·{" "}
-                {owner.building_sqft
-                  ? fmt(owner.building_sqft) + " sq ft"
-                  : "Area not published"}
-              </dd>
-            </div>
-          </dl>
-          <p className="muted">
-            Realie · retrieved {time(owner.fetched_at)} · expires{" "}
-            {time(owner.expires_at)}.{" "}
-            {owner.record_date
-              ? "Source date: " + owner.record_date
-              : "Source record date not provided."}
-          </p>
-          <form
-            className="detail-form"
-            onSubmit={submit}
-            key={owner.identity_hash + String(review.suppressed)}
-          >
-            <label>
-              Owner type
-              <select
-                className="form-select"
-                name="owner_type"
-                defaultValue={review.owner_type}
-              >
-                {["Unknown", "Person", "Company", "Trust/Other"].map((v) => (
-                  <option key={v}>{v}</option>
-                ))}
-              </select>
-            </label>
-            <label className="review-check">
-              <input
-                type="checkbox"
-                name="reviewed"
-                defaultChecked={review.reviewed}
-              />{" "}
-              I reviewed the property match and owner identity
-            </label>
-            <label className="review-check">
-              <input
-                type="checkbox"
-                name="suppressed"
-                defaultChecked={review.suppressed}
-              />{" "}
-              Suppress contact lookup for this owner
-            </label>
-            {!!contacts?.candidates.length && (
-              <label className="review-check">
-                <input
-                  type="checkbox"
-                  name="contacts_verified"
-                  defaultChecked={review.contacts_verified}
-                />{" "}
-                I verified the contacts belong to this owner/business
-              </label>
-            )}
-            <button
-              className="btn btn-outline-secondary"
-              disabled={busy}
-              aria-busy={busy}
-            >
-              Save identity review
-            </button>
-          </form>
-          <div className="contact-actions">
-            <Action
-              disabled={!contactAllowed || pending("contacts")}
-              onClick={() => enrich("contacts")}
-            >
-              {pending("contacts") ? "Finding contacts…" : "Find contact"}
-            </Action>
-            <small>
-              {review.suppressed
-                ? "Contact lookup is suppressed."
-                : !review.reviewed
-                  ? "Review and save the owner identity first."
-                  : review.owner_type === "Person" &&
-                      !data.consumer_append_enabled
-                    ? "Consumer contact lookup needs a confirmed Append trial."
-                    : providers.melissa.message}
-            </small>
-          </div>
-        </>
-      ) : (
-        <>
-          <Action
-            disabled={!providers.realie.available || pending("owner")}
-            onClick={() => enrich("owner")}
-          >
-            {pending("owner") ? "Finding owner…" : "Find owner"}
-          </Action>
-          <p className="muted">Realie: {providers.realie.message}</p>
-        </>
-      )}
+      <div className="contact-actions">
+        <Action disabled={!contactAllowed || pending} onClick={enrich}>
+          {pending ? "Searching address…" : "Find people at address"}
+        </Action>
+        <small>
+          {!data.personator_search_enabled
+            ? "Contact lookup needs a confirmed Personator Search trial."
+            : providers.melissa.message}
+        </small>
+      </div>
       {contacts && (
         <div className="contact-results">
-          <strong>
-            {review.contacts_verified
-              ? "Identity verified by workspace user"
-              : contacts.match_status}
-          </strong>
+          <strong>{contacts.match_status}</strong>
           {contacts.candidates.length ? (
             contacts.candidates.map((c, i) => (
               <p key={i}>

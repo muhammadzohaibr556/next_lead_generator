@@ -53,6 +53,7 @@ export function addressKey(value: string): string {
     SOUTH: "S",
     EAST: "E",
     WEST: "W",
+    MOUNT: "MT",
     STREET: "ST",
     AVENUE: "AVE",
     ROAD: "RD",
