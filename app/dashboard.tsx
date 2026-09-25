@@ -1648,7 +1648,65 @@ function Enrichment({
 }) {
   const { contacts, providers } = data,
     jobs = data.jobs.filter((job) => job.kind === "contacts"),
-    pending = jobs.some((job) => ["queued", "running"].includes(job.status));
+    pending = jobs.some((job) => ["queued", "running"].includes(job.status)),
+    [showAll, setShowAll] = useState(false),
+    [copied, setCopied] = useState("");
+  const people = (() => {
+      const grouped = new Map<
+        string,
+        {
+          key: string;
+          name: string;
+          role: string;
+          phones: Set<string>;
+          emails: Set<string>;
+        }
+      >();
+      for (const candidate of contacts?.candidates || []) {
+        const key =
+            candidate.identity_key || candidate.name.trim().toLowerCase(),
+          person = grouped.get(key) || {
+            key,
+            name: candidate.name,
+            role: candidate.role,
+            phones: new Set<string>(),
+            emails: new Set<string>(),
+          };
+        if (candidate.phone) person.phones.add(candidate.phone);
+        if (candidate.email) person.emails.add(candidate.email);
+        grouped.set(key, person);
+      }
+      return [...grouped.values()]
+        .map((person) => ({
+          ...person,
+          phones: [...person.phones],
+          emails: [...person.emails],
+        }))
+        .sort(
+          (a, b) =>
+            Number(Boolean(b.phones.length || b.emails.length)) -
+              Number(Boolean(a.phones.length || a.emails.length)) ||
+            a.name.localeCompare(b.name),
+        );
+    })(),
+    visiblePeople = showAll ? people : people.slice(0, 5),
+    [matchTitle, matchNote] = contacts?.match_status.split(" · ") || [],
+    phoneLabel = (value: string) => {
+      const digits = value.replace(/\D/g, "");
+      return digits.length === 10
+        ? `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
+        : digits.length === 11 && digits.startsWith("1")
+          ? `+1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`
+          : value;
+    },
+    copy = async (value: string) => {
+      try {
+        await navigator.clipboard.writeText(value);
+        setCopied(value);
+      } catch {
+        setCopied("");
+      }
+    };
   const contactAllowed =
     providers.melissa.available && data.personator_search_enabled;
   const enrich = () =>
@@ -1680,21 +1738,97 @@ function Enrichment({
       </div>
       {contacts && (
         <div className="contact-results">
-          <strong>{contacts.match_status}</strong>
-          {contacts.candidates.length ? (
-            contacts.candidates.map((c, i) => (
-              <p key={i}>
-                {c.name} · {c.role}
-                <br />
-                {c.phone || "Phone not returned"}
-                <br />
-                {c.email || "Email not returned"}
-              </p>
-            ))
+          <div className="contact-results-header">
+            <div>
+              <strong>{matchTitle}</strong>
+              <small>
+                {people.length} {people.length === 1 ? "person" : "people"}{" "}
+                returned
+              </small>
+            </div>
+            <span>{matchNote || "Ownership unverified"}</span>
+          </div>
+          {people.length ? (
+            <div className="contact-people">
+              {visiblePeople.map((person) => (
+                <article className="contact-person" key={person.key}>
+                  <div className="contact-person-heading">
+                    <span className="contact-avatar" aria-hidden="true">
+                      {person.name
+                        .split(/\s+/)
+                        .slice(0, 2)
+                        .map((part) => part[0])
+                        .join("")}
+                    </span>
+                    <div>
+                      <h4>{person.name}</h4>
+                      <small>{person.role}</small>
+                    </div>
+                  </div>
+                  {person.phones.length || person.emails.length ? (
+                    <div className="contact-channels">
+                      {!!person.phones.length && (
+                        <div>
+                          <b>Phones</b>
+                          <div className="contact-values">
+                            {person.phones.map((phone) => (
+                              <span className="contact-value" key={phone}>
+                                <a href={`tel:${phone}`}>
+                                  {phoneLabel(phone)}
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => void copy(phone)}
+                                  aria-label={`Copy ${phoneLabel(phone)}`}
+                                >
+                                  {copied === phone ? "Copied" : "Copy"}
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {!!person.emails.length && (
+                        <div>
+                          <b>Emails</b>
+                          <div className="contact-values">
+                            {person.emails.map((email) => (
+                              <span className="contact-value" key={email}>
+                                <a href={`mailto:${email}`}>{email}</a>
+                                <button
+                                  type="button"
+                                  onClick={() => void copy(email)}
+                                  aria-label={`Copy ${email}`}
+                                >
+                                  {copied === email ? "Copied" : "Copy"}
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="contact-empty">
+                      No contact information returned
+                    </p>
+                  )}
+                </article>
+              ))}
+              {people.length > 5 && (
+                <button
+                  className="btn btn-outline-secondary contact-show-all"
+                  type="button"
+                  onClick={() => setShowAll((value) => !value)}
+                >
+                  {showAll ? "Show fewer" : `Show all ${people.length} people`}
+                </button>
+              )}
+            </div>
           ) : (
-            <p>No phone or email returned.</p>
+            <p className="contact-empty">No people returned.</p>
           )}
-          <small>
+          <small className="contact-source">
             Melissa · {time(contacts.fetched_at)} ·{" "}
             {contacts.result_codes.join(", ")}
           </small>

@@ -172,12 +172,14 @@ test("Identity parsers require exact owner, unit and provider confirmation", () 
     );
   assert.deepEqual(contacts.candidates, [
     {
+      identity_key: "MIK-1",
       name: "Patrick K McGuire",
       role: "Person associated with address",
       phone: "8586038178",
       email: "",
     },
     {
+      identity_key: "MIK-2",
       name: "Elise McGuire",
       role: "Person associated with address",
       phone: "",
@@ -215,6 +217,7 @@ test("Identity parsers require exact owner, unit and provider confirmation", () 
   );
   assert.deepEqual(buildingContacts.candidates, [
     {
+      identity_key: "10614422075",
       name: "Camila Escallon",
       role: "Person associated with address",
       phone: "",

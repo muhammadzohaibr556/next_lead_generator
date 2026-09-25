@@ -90,7 +90,13 @@ export interface Contacts {
   provider: string;
   owner_identity_hash: string;
   identity_hash: string;
-  candidates: { name: string; role: string; phone: string; email: string }[];
+  candidates: {
+    identity_key?: string;
+    name: string;
+    role: string;
+    phone: string;
+    email: string;
+  }[];
   result_codes: string[];
   match_status: string;
   source_url: string;
@@ -506,12 +512,13 @@ export function parseContacts(
     identities.set(key, identity);
   }
   const candidates: Contacts["candidates"] = [];
-  for (const identity of identities.values()) {
+  for (const [identityKey, identity] of identities) {
     const phones = [...identity.phones],
       emails = [...identity.emails],
       rows = Math.max(1, phones.length, emails.length);
     for (let i = 0; i < rows; i++)
       candidates.push({
+        identity_key: identityKey.startsWith("record-") ? "" : identityKey,
         name: identity.name,
         role: "Person associated with address",
         phone: phones[i] || "",
